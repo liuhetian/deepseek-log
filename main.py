@@ -259,8 +259,141 @@ PAGE_CSS = """
   .kv{color:var(--accent);font-weight:800}
   .no-data{color:var(--muted);padding:18px 0}
 
+  /* JSON 折叠树（思维导图式） */
+  .json-tree{border:2px solid var(--ink);padding:12px 14px;overflow:auto;
+     font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.7}
+  .json-tree details{margin:0}
+  .json-tree summary{cursor:pointer;list-style:none;outline:none}
+  .json-tree summary::-webkit-details-marker{display:none}
+  .json-tree summary::before{content:"▸";display:inline-block;width:1.1em;
+     color:var(--accent);font-weight:900}
+  .json-tree details[open]>summary::before{content:"▾"}
+  .json-tree .jbody{padding-left:14px;margin-left:5px;border-left:1px solid rgba(21,21,21,.28)}
+  .json-tree .jline{padding-left:1.1em}
+  .json-tree .jk{color:var(--accent);font-weight:700}
+  .json-tree .jt{color:var(--muted)}
+  .json-tree .jv-string{color:#1a6e3c}
+  .json-tree .jv-number{color:#8a2f1b}
+  .json-tree .jv-boolean,.json-tree .jv-null{color:#6a1b9a}
+
+  /* SSE 流式还原 */
+  .sse-view{border:2px solid var(--ink)}
+  .sse-meta{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);
+     padding:8px 14px;border-bottom:2px solid var(--ink);letter-spacing:.04em}
+  .sse-meta b{color:var(--ink);font-weight:900}
+  .sse-think{border-bottom:1px solid rgba(21,21,21,.28)}
+  .sse-think summary{cursor:pointer;list-style:none;font-weight:900;color:var(--ink);
+     padding:8px 14px;letter-spacing:.06em}
+  .sse-think summary::-webkit-details-marker{display:none}
+  .sse-think summary::before{content:"▸ ";color:var(--accent)}
+  .sse-think[open] summary::before{content:"▾ "}
+  .sse-think .think-body{padding:0 14px 12px;white-space:pre-wrap;line-height:1.7;
+     font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;color:var(--muted)}
+  .sse-text{padding:12px 16px;white-space:pre-wrap;line-height:1.95;font-size:17px;color:var(--ink)}
+  .sse-empty{padding:12px 14px;color:var(--muted)}
+
+  /* 折叠原文 */
+  .raw-fold{margin-top:8px}
+  .raw-fold>summary{cursor:pointer;font-size:12px;color:var(--muted);
+     letter-spacing:.1em;text-transform:uppercase}
+  .raw-fold pre{margin-top:8px}
+
   @media(max-width:860px){.page{padding:0 16px 40px}.masthead h1{font-size:30px}}
 </style>
+"""
+
+# 详情页注入的前端脚本：JSON 折叠树 + SSE 流式还原（纯前端，读隐藏 <pre> 的原文）
+PANEL_JS = """
+<script>
+(function(){
+  function esc(s){return String(s).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+
+  // ── JSON 折叠树 ──
+  function node(value, key){
+    if(value!==null && typeof value==='object'){
+      var det=document.createElement('details'); det.open=true;
+      var sum=document.createElement('summary');
+      var arr=Array.isArray(value);
+      var n=arr?value.length:Object.keys(value).length;
+      sum.innerHTML=(key!==undefined?'<span class="jk">'+esc(key)+'</span>: ':'')+
+        '<span class="jt">'+(arr?'Array['+n+']':'Object{'+n+'}')+'</span>';
+      det.appendChild(sum);
+      var box=document.createElement('div'); box.className='jbody';
+      var entries=arr?value.map(function(v,i){return [i,v];}):Object.entries(value);
+      entries.forEach(function(kv){ box.appendChild(node(kv[1],kv[0])); });
+      det.appendChild(box);
+      return det;
+    }
+    var line=document.createElement('div'); line.className='jline';
+    var t=value===null?'null':typeof value;
+    line.innerHTML=(key!==undefined?'<span class="jk">'+esc(key)+'</span>: ':'')+
+      '<span class="jv jv-'+t+'">'+esc(JSON.stringify(value))+'</span>';
+    return line;
+  }
+  document.querySelectorAll('.json-tree').forEach(function(el){
+    var raw=document.getElementById(el.dataset.src).textContent;
+    if(!raw.trim()){ el.innerHTML='<span class="sse-empty">(空)</span>'; return; }
+    try{ el.appendChild(node(JSON.parse(raw))); }
+    catch(e){ var p=document.createElement('pre'); p.textContent=raw; el.appendChild(p); }
+  });
+
+  // ── SSE 解析 + 拼接 ──
+  function parseSSE(raw){
+    var out=[];
+    raw.split(/\\r?\\n\\r?\\n/).forEach(function(block){
+      var ev=null, dat=[];
+      block.split(/\\r?\\n/).forEach(function(line){
+        if(line.indexOf('event:')===0) ev=line.slice(6).trim();
+        else if(line.indexOf('data:')===0) dat.push(line.slice(5).replace(/^ /,''));
+      });
+      if(dat.length){ var d=null; try{d=JSON.parse(dat.join('\\n'));}catch(e){}
+        out.push({ev:ev,d:d}); }
+    });
+    return out;
+  }
+  function assemble(evts){
+    var thinking='',text='',meta={};
+    evts.forEach(function(o){
+      var d=o.d; if(!d) return;
+      if(d.type==='content_block_delta'&&d.delta){           // Anthropic 风格
+        if(d.delta.type==='thinking_delta') thinking+=d.delta.thinking||'';
+        else if(d.delta.type==='text_delta') text+=d.delta.text||'';
+      }
+      if(d.type==='message_start'&&d.message) meta.model=d.message.model;
+      if(d.type==='message_delta'){
+        if(d.delta&&d.delta.stop_reason) meta.stop=d.delta.stop_reason;
+        if(d.usage) meta.usage=d.usage;
+      }
+      if(d.choices){                                          // OpenAI / DeepSeek 兼容
+        var dd=(d.choices[0]||{}).delta||{};
+        if(dd.reasoning_content) thinking+=dd.reasoning_content;
+        if(dd.content) text+=dd.content;
+        if(d.model) meta.model=d.model;
+        if(d.usage) meta.usage=d.usage;
+        var fr=(d.choices[0]||{}).finish_reason; if(fr) meta.stop=fr;
+      }
+    });
+    return {thinking:thinking,text:text,meta:meta,count:evts.length};
+  }
+  document.querySelectorAll('.sse-view').forEach(function(el){
+    var raw=document.getElementById(el.dataset.src).textContent;
+    var r=assemble(parseSSE(raw)), u=r.meta.usage||{}, bits=[];
+    if(r.meta.model) bits.push('模型 <b>'+esc(r.meta.model)+'</b>');
+    bits.push('事件 <b>'+r.count+'</b>');
+    if(r.meta.stop) bits.push('结束 <b>'+esc(r.meta.stop)+'</b>');
+    if(u.output_tokens!=null) bits.push('输出 <b>'+u.output_tokens+'</b> tok');
+    if(u.input_tokens!=null) bits.push('输入 <b>'+u.input_tokens+'</b> tok');
+    var html='<div class="sse-meta">'+bits.join('')+'</div>';
+    if(r.thinking) html+='<details class="sse-think"><summary>思考过程（'+
+      r.thinking.length+' 字）</summary><div class="think-body">'+esc(r.thinking)+'</div></details>';
+    if(r.text) html+='<div class="sse-text">'+esc(r.text)+'</div>';
+    if(!r.thinking&&!r.text) html+='<div class="sse-empty">未能从流中拼接出 '+
+      'thinking/text，请展开下方原始内容查看。</div>';
+    el.innerHTML=html;
+  });
+})();
+</script>
 """
 
 
@@ -314,6 +447,14 @@ async def panel_detail(rid: str):
 
     dur = f"{ex.duration_ms:.0f}ms" if ex.duration_ms is not None else "—"
     trunc = "  ⚠️ 已截断" if ex.truncated else ""
+
+    # 响应体视图：流式 -> SSE 还原器；否则 -> JSON 折叠树
+    resp_view = (
+        '<div class="sse-view" data-src="resp-raw"></div>'
+        if ex.is_stream
+        else '<div class="json-tree" data-src="resp-raw"></div>'
+    )
+
     return f"""<!doctype html><html><head><meta charset=utf-8>{PAGE_CSS}</head><body>
     <div class="page">
       <header class="masthead">
@@ -324,10 +465,24 @@ async def panel_detail(rid: str):
       </header>
 
       <h2>请求 Headers</h2><pre>{render_headers(ex.req_headers)}</pre>
-      <h2>请求 Body</h2><pre>{html.escape(fmt_body(ex.req_body)) or "(空)"}</pre>
+
+      <h2>请求 Body</h2>
+      <div class="json-tree" data-src="req-raw"></div>
+      <details class="raw-fold"><summary>原始文本</summary>
+        <pre>{html.escape(ex.req_body) or "(空)"}</pre></details>
+
       <h2>响应 Headers</h2><pre>{render_headers(ex.resp_headers)}</pre>
-      <h2>响应 Body{trunc}</h2><pre>{html.escape(fmt_body(ex.resp_body)) or "(空)"}</pre>
-    </div></body></html>"""
+
+      <h2>响应 Body{trunc}</h2>
+      {resp_view}
+      <details class="raw-fold"><summary>原始文本</summary>
+        <pre>{html.escape(ex.resp_body) or "(空)"}</pre></details>
+
+      <pre id="req-raw" hidden>{html.escape(ex.req_body)}</pre>
+      <pre id="resp-raw" hidden>{html.escape(ex.resp_body)}</pre>
+    </div>
+    {PANEL_JS}
+    </body></html>"""
 
 
 # ─── catch-all 代理路由（必须放在最后，否则会吞掉上面的面板路由）───
