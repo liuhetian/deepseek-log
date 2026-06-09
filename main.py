@@ -187,6 +187,23 @@ async def do_proxy(path: str, request: Request) -> Response:
     )
 
 
+# ─────────────────────────── favicon ───────────────────────────
+
+# 手绘 DeepSeek 风格的小鲸鱼（品牌蓝底 + 白鲸），本地返回，不转发到上游
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#4D6BFE"/>
+  <path d="M19 15 q2 -5 4 0" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M10 36 C10 26 18 22 26 22 C36 22 40 28 41 34 L52 27 L48 37 L52 47 L40 40
+           C38 44 30 47 22 45 C14 43 10 41 10 36 Z" fill="#fff"/>
+  <circle cx="20" cy="33" r="2.2" fill="#4D6BFE"/>
+</svg>"""
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(content=FAVICON_SVG, media_type="image/svg+xml")
+
+
 # ─────────────────────────── 查看面板 (HTML) ───────────────────────────
 
 
